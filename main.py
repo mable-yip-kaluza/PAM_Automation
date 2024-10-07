@@ -1,3 +1,4 @@
+import base64
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
@@ -8,6 +9,12 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 import logging
 from jira import JIRA, JIRAError
+from slack_sdk.models.blocks import InputBlock, SectionBlock, ContextBlock
+from slack_sdk.models.blocks.block_elements import PlainTextInputElement
+from slack_sdk.models.views import View
+from slack_sdk.models.blocks.basic_components import PlainTextObject, MarkdownTextObject
+from slack_sdk.errors import SlackApiError
+from github import Github, GithubException
 
 # Load environment variables
 load_dotenv()
@@ -33,12 +40,7 @@ slack_channel = os.getenv('SLACK_CHANNEL')
 GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
 GITHUB_REPO = os.getenv('GITHUB_REPO')
 
-
-email_prod_access_weekly_rotation = [
-    'mable.yip@kaluza.com'
-]
-
-email_prod_access_always = ['ben.clare@kaluza.com']
+team_email_lists = {}
 
 @app.route('/slack/actions', methods=['POST'])
 def handle_interactions():
@@ -52,34 +54,119 @@ def handle_interactions():
         elif payload.get("type") == "block_actions":
             action = payload["actions"][0]
             action_id = action["action_id"]
+            # Extract team name from message metadata
+            team_name = payload.get("message", {}).get("metadata", {}).get("event_payload", {}).get("team_name", "")
+            # Fetch the breakglass emails for the current team
+            breakglass_emails = get_emails_from_github(team_name)
             
-            if action_id == 'confirm_prod_access':
-                response_message = "Production access confirmed for next week. Jira tickets will be created."
-                create_jira_tickets()
-                return jsonify({"status": "success", "message": response_message})
-            elif action_id == 'edit_people':
-                return open_edit_modal(payload['trigger_id'])
+            if action_id == 'edit_people':
+                app.logger.debug(f"Extracted team name: {team_name}")
+                return open_edit_modal(payload['trigger_id'], breakglass_emails, team_name)
+            elif action_id == 'confirm_prod_access':
+                # Extract team name from message metadata
+                team_name = payload.get("message", {}).get("metadata", {}).get("event_payload", {}).get("team_name", "")
+                # Get the current email list for the team
+                breakglass_emails = team_email_lists.get(team_name, [])
+                
+                if create_jira_tickets(breakglass_emails, team_name):
+                    response_message = "Production access confirmed for next week. Jira tickets have been created."
+                else:
+                    response_message = "Failed to create Jira tickets. Please try again or contact support."
+                
+                return jsonify({
+                    "response_action": "update",
+                    "view": {
+                        "type": "modal",
+                        "title": {"type": "plain_text", "text": "Confirmation"},
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": response_message}
+                            }
+                        ]
+                    }
+                })
+        
             else:
                 response_message = "Unknown action"
                 return jsonify({"status": "error", "message": response_message})
         else:
             return jsonify({"status": "error", "message": "Unknown payload type"})
+    elif "trigger_id" in request.form:
+        return open_team_selection_modal(request.form['trigger_id'])
     else:
-        return post_email_list_message()
+        return jsonify({"status": "error", "message": "Invalid request"})
 
-def post_email_list_message():
+def get_team_selection_view(team_name: str = "") -> View:
+    blocks = [
+        InputBlock(
+            block_id="team_name",
+            label=PlainTextObject(text="Team Name"),
+            element=PlainTextInputElement(
+                action_id="team_name_input",
+                placeholder=PlainTextObject(text="Enter the complete team name"),
+                initial_value=team_name
+            )
+        )
+    ]
+
+    return View(
+        type="modal",
+        callback_id="team_selection_modal",
+        title=PlainTextObject(text="Select Team"),
+        submit=PlainTextObject(text="Confirm"),
+        close=PlainTextObject(text="Cancel"),
+        blocks=blocks
+    )
+
+def open_team_selection_modal(trigger_id):
     try:
-        emails = email_prod_access_weekly_rotation + email_prod_access_always
+        slack_client.views_open(
+            trigger_id=trigger_id,
+            view={
+                "type": "modal",
+                "callback_id": "team_selection_modal",
+                "title": {"type": "plain_text", "text": "Select Team"},
+                "submit": {"type": "plain_text", "text": "Confirm"},
+                "close": {"type": "plain_text", "text": "Cancel"},
+                "blocks": [
+                    {
+                        "type": "input",
+                        "block_id": "team_name",
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "team_name_input",
+                            "placeholder": {"type": "plain_text", "text": "Enter the complete team name"}
+                        },
+                        "label": {"type": "plain_text", "text": "Team Name"}
+                    }
+                ]
+            }
+        )
+        return jsonify({"status": "success"})
+    except SlackApiError as e:
+        return jsonify({"status": "error", "error": str(e)})
+    
+def post_email_list_message(team_name, emails):
+    try:
+        if not emails:
+            error_message = f"No emails found for team {team_name}. Please check the team name and try again."
+            slack_client.chat_postMessage(
+                channel=slack_channel,
+                text=error_message
+            )
+            return jsonify({"response_action": "errors", "errors": {"team_name": error_message}})
+
         email_list = "\n• ".join(emails)
         response = slack_client.chat_postMessage(
             channel=slack_channel,
-            text=f"Please confirm the following people for next week's production access:\n{email_list}",
+            text=f"Please confirm the following people for next week's production access for team {team_name}:\n{email_list}",
             blocks=[
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"Who will have production access next week?\n\n*People for next week's production access:*\n• {email_list}"
+                        "text": f"Who will have production access next week for team *{team_name}*?\n\n*People for next week's production access:*\n• {email_list}"
                     }
                 },
                 {
@@ -103,114 +190,56 @@ def post_email_list_message():
                         }
                     ]
                 }
-            ]
+            ],
+            metadata={"event_type": "prod_access_request", "event_payload": {"team_name": team_name}}
         )
-        return jsonify({"status": "message sent", "ts": response['ts'], "channel": response['channel']})
+        app.logger.debug(f"Posted email list message: {response}")
+        return jsonify({"response_action": "clear"})
     except SlackApiError as e:
-        return jsonify({"status": "error", "error": e.response['error']})
-
-def handle_view_submission(payload):
-    app.logger.debug(f"Received view submission payload: {payload}")
-    view = payload["view"]
-    if view["callback_id"] == "edit_people_modal":
-        new_emails = view["state"]["values"]["email_list"]["email_input"]["value"].split("\n")
-        new_emails = [email.strip() for email in new_emails if email.strip()]
-        
-        app.logger.debug(f"New emails: {new_emails}")
-        
-        global email_prod_access_weekly_rotation, email_prod_access_always
-        email_prod_access_weekly_rotation = new_emails
-        email_prod_access_always = []  # Reset this list as we're not differentiating in the UI
-        
-        app.logger.debug(f"Updated email_prod_access_weekly_rotation: {email_prod_access_weekly_rotation}")
-        
-        update_email_list_message(payload['user']['id'])
-        
-        return jsonify({
-            "response_action": "clear"
-        })
+        app.logger.error(f"Error posting email list message: {e}")
+        return jsonify({"response_action": "errors", "errors": {"team_name": str(e)}})
     
-    return jsonify({"status": "error", "message": "Unknown view submission"})
+def handle_view_submission(payload):
+    view = payload["view"]
+    if view["callback_id"] == "team_selection_modal":
+        # Handle team selection submission
+        team_name = view["state"]["values"]["team_name"]["team_name_input"]["value"]
+        app.logger.debug(f"Selected team: {team_name}")
+        
+        # Fetch the breakglass emails for the selected team
+        breakglass_emails = get_emails_from_github(team_name)
+        
+        # Post the initial email list message
+        return post_email_list_message(team_name, breakglass_emails)
+    
+    elif view["callback_id"] == "edit_people_modal":
+        # Handle email edit submission
+        updated_emails = view["state"]["values"]["email_list"]["email_input"]["value"].split("\n")
+        team_name = view.get("private_metadata", "Unknown Team")
+        
+        app.logger.info(f"Updated email list for team {team_name}: {updated_emails}")
+        
+        # Post an updated message with the new email list
+        return post_updated_email_list_message(team_name, updated_emails)
+    
+    return jsonify({"response_action": "errors", "errors": {"email_list": "Invalid submission"}})
 
-def update_email_list_message(user_id):
+def post_updated_email_list_message(team_name, emails):
+    global team_email_lists
+    team_email_lists[team_name] = emails  # Store the updated email list
+    
     try:
-        emails = email_prod_access_weekly_rotation + email_prod_access_always
         email_list = "\n• ".join(emails)
-        
-        app.logger.debug(f"Updating message with email list: {email_list}")
-        
-        try:
-            history = slack_client.conversations_history(channel=slack_channel, limit=10)
-            for message in history['messages']:
-                if message.get('bot_id'):
-                    updated_message = slack_client.chat_update(
-                        channel=slack_channel,
-                        ts=message['ts'],
-                        text=f"Please confirm the following people for next week's production access:\n{email_list}",
-                        blocks=[
-                            {
-                                "type": "section",
-                                "text": {
-                                    "type": "mrkdwn",
-                                    "text": f"Who will have production access next week?\n\n*People for next week's production access:*\n• {email_list}"
-                                }
-                            },
-                            {
-                                "type": "context",
-                                "elements": [
-                                    {
-                                        "type": "mrkdwn",
-                                        "text": f"Last edited by <@{user_id}>"
-                                    }
-                                ]
-                            },
-                            {
-                                "type": "actions",
-                                "elements": [
-                                    {
-                                        "type": "button",
-                                        "text": {
-                                            "type": "plain_text",
-                                            "text": "Confirm"
-                                        },
-                                        "action_id": "confirm_prod_access"
-                                    },
-                                    {
-                                        "type": "button",
-                                        "text": {
-                                            "type": "plain_text",
-                                            "text": "Edit People"
-                                        },
-                                        "action_id": "edit_people"
-                                    }
-                                ]
-                            }
-                        ]
-                    )
-                    app.logger.debug(f"Updated message response: {updated_message}")
-                    return
-        except SlackApiError as e:
-            app.logger.error(f"Error updating message: {e}")
-        
-        new_message = slack_client.chat_postMessage(
+        response = slack_client.chat_postMessage(
             channel=slack_channel,
-            text=f"Please confirm the following people for next week's production access:\n{email_list}",
+            text=f"Updated list of people for next week's production access for team {team_name}:\n{email_list}",
             blocks=[
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"Who will have production access next week?\n\n*People for next week's production access:*\n• {email_list}"
+                        "text": f"Updated list of people for next week's production access for team *{team_name}*:\n\n• {email_list}"
                     }
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"Last edited by <@{user_id}>"
-                        }
-                    ]
                 },
                 {
                     "type": "actions",
@@ -233,12 +262,15 @@ def update_email_list_message(user_id):
                         }
                     ]
                 }
-            ]
+            ],
+            metadata={"event_type": "prod_access_request", "event_payload": {"team_name": team_name}}
         )
-        app.logger.debug(f"Posted new message: {new_message}")
+        app.logger.debug(f"Posted updated email list message: {response}")
+        return jsonify({"response_action": "clear"})
     except SlackApiError as e:
-        app.logger.error(f"Error posting message: {e}")
-
+        app.logger.error(f"Error posting updated email list message: {e}")
+        return jsonify({"response_action": "errors", "errors": {"email_list": "Failed to update email list"}})
+    
 def get_jira_account_id(jira, email):
     try:
         users = jira.search_users(query=email, maxResults=1)
@@ -251,49 +283,43 @@ def get_jira_account_id(jira, email):
         app.logger.error(f"Error searching for user: {str(e)}")
         return None
     
-def create_jira_tickets():
-    if not all([jira_api_token, jira_email, jira_server, manager_email]):
-        app.logger.error("Missing JIRA environment variables")
-        return None
-
+def create_jira_tickets(breakglass_emails, team_name):
     try:
         jira = JIRA(server=jira_server, basic_auth=(jira_email, jira_api_token))
         
-        # Get the account ID for the manager
-        manager_account_id = get_jira_account_id(jira, manager_email)
-        if not manager_account_id:
-            send_slack_message(f"Error: Could not find Jira user with email: {manager_email}")
-            return None
-
-        emails = email_prod_access_weekly_rotation + email_prod_access_always
-        created_tickets = []
-        
-        for email in emails:
+        for email in breakglass_emails:
+            summary = f"Grant production access to {email} for team {team_name}"
+            description = f"Please grant production access to {email} for the {team_name} team for the upcoming week."
+            
             issue_dict = {
                 'project': {'key': jira_project_key},
-                'summary': f'Production access for {email}',
-                'description': f'Granting production access for {email} for next week.',
+                'summary': summary,
+                'description': description,
                 'issuetype': {'name': 'Task'},
-                'assignee': {'id': manager_account_id}
             }
             
             new_issue = jira.create_issue(fields=issue_dict)
-            app.logger.info(f"Created JIRA issue: {new_issue.key} for {email}")
-            created_tickets.append((email, new_issue.key))
+            app.logger.info(f"Created Jira ticket: {new_issue.key}")
             
-            # Send Slack message for each created ticket
-            send_slack_message(f"Created JIRA issue: <{jira_server}browse/{new_issue.key}|{new_issue.key}> for {email}")
-
-        update_github_and_create_pr(emails)
+            # Assign the ticket to the manager
+            manager_account_id = get_jira_account_id(jira, manager_email)
+            if manager_account_id:
+                try:
+                    jira.assign_issue(new_issue, manager_account_id)
+                    app.logger.info(f"Assigned ticket {new_issue.key} to {manager_email}")
+                except JIRAError as e:
+                    app.logger.warning(f"Could not assign ticket {new_issue.key} to {manager_email}: {str(e)}")
+            else:
+                app.logger.warning(f"Could not assign ticket {new_issue.key} to {manager_email}: Account ID not found")
         
-        return created_tickets
+        return True
+    except JIRAError as e:
+        app.logger.error(f"JIRA Error: {str(e)}")
+        return False
     except Exception as e:
-        error_message = f"Failed to create Jira tickets: {str(e)}"
-        app.logger.error(error_message)
-        send_slack_message(error_message)
-        return None
+        app.logger.error(f"Failed to create Jira tickets: {str(e)}")
+        return False
     
-
 def send_slack_message(message):
     try:
         slack_client.chat_postMessage(
@@ -336,9 +362,12 @@ def send_jira_confirmation(channel_id, created_tickets):
     except SlackApiError as e:
         app.logger.error(f"Error sending Jira confirmation: {e}")
 
-def open_edit_modal(trigger_id):
-    emails = email_prod_access_weekly_rotation + email_prod_access_always
-    email_list = "\n".join(emails)
+
+def open_edit_modal(trigger_id, breakglass_emails, team_name):
+    global team_email_lists
+    
+    # Use the stored email list if available, otherwise use the breakglass emails
+    email_list = "\n".join(team_email_lists.get(team_name, breakglass_emails))
     
     try:
         slack_client.views_open(
@@ -349,6 +378,7 @@ def open_edit_modal(trigger_id):
                 "title": {"type": "plain_text", "text": "Edit People"},
                 "submit": {"type": "plain_text", "text": "Submit"},
                 "close": {"type": "plain_text", "text": "Cancel"},
+                "private_metadata": team_name,
                 "blocks": [
                     {
                         "type": "input",
@@ -366,7 +396,47 @@ def open_edit_modal(trigger_id):
         )
         return jsonify({"status": "success"})
     except SlackApiError as e:
+        app.logger.error(f"Error opening edit modal: {e}")
         return jsonify({"status": "error", "error": str(e)})
+
+def get_emails_from_github(team_name):
+    try:
+        g = Github(GITHUB_TOKEN)
+        repo = g.get_repo(GITHUB_REPO)
+        file_path = f"teams/{team_name}/{team_name}.json"
+        
+        app.logger.debug(f"Attempting to fetch file: {file_path}")
+        
+        try:
+            file_content = repo.get_contents(file_path)
+            content = base64.b64decode(file_content.content).decode('utf-8')
+            app.logger.debug(f"Raw file content: {content}")
+            
+            data = json.loads(content)
+            app.logger.debug(f"Parsed JSON data: {json.dumps(data, indent=2)}")
+            
+            breakglass_emails = []
+            if 'Resources' in data and 'Aws' in data['Resources']:
+                for aws_account in data['Resources']['Aws']:
+                    if 'Production' in aws_account and aws_account['Production']:
+                        if 'BreakGlass' in aws_account and 'Write' in aws_account['BreakGlass']:
+                            for entry in aws_account['BreakGlass']['Write']:
+                                if 'Email' in entry:
+                                    breakglass_emails.append(entry['Email'])
+                                    app.logger.debug(f"Added email: {entry['Email']}")
+            
+            if not breakglass_emails:
+                app.logger.warning("No BreakGlass emails found for production AWS accounts")
+            
+            app.logger.debug(f"Extracted emails: {breakglass_emails}")
+            
+            return breakglass_emails
+        except GithubException as e:
+            app.logger.error(f"Error fetching file from GitHub: {e}")
+            return []
+    except Exception as e:
+        app.logger.error(f"Error connecting to GitHub: {str(e)}")
+        return []
 
 def update_github_and_create_pr(emails):
     try:
