@@ -368,7 +368,6 @@ def open_edit_modal(trigger_id):
     except SlackApiError as e:
         return jsonify({"status": "error", "error": str(e)})
 
-
 def update_github_and_create_pr(emails):
     try:
         g = Github(os.getenv('GITHUB_TOKEN'))
@@ -377,36 +376,61 @@ def update_github_and_create_pr(emails):
         # Get the content of the file
         file_path = "teams/statements/statements.json"
         file_content = repo.get_contents(file_path)
-        team_data = json.loads(file_content.decoded_content.decode())
+        content = file_content.decoded_content.decode()
 
-        # Update the expiry dates and add new entries
-        updated = False
-        for account in team_data['Resources']['Aws']:
-            if 'BreakGlass' in account and 'Write' in account['BreakGlass']:
-                existing_emails = [user['Email'] for user in account['BreakGlass']['Write']]
-                for email in emails:
-                    if email in existing_emails:
-                        # Update existing entry
-                        for user in account['BreakGlass']['Write']:
-                            if user['Email'] == email:
-                                new_expiry = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-                                user['Expiry'] = new_expiry
-                                updated = True
-                    else:
-                        # Add new entry
-                        new_expiry = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-                        account['BreakGlass']['Write'].append({
-                            "Email": email,
-                            "Expiry": new_expiry
-                        })
-                        updated = True
+        # Find the BreakGlass Write section
+        breakglass_start = content.find('"BreakGlass": {')
+        write_start = content.find('"Write": [', breakglass_start)
+        write_end = content.find(']', write_start)
+        
+        # Extract the current Write entries
+        write_content = content[write_start+10:write_end].strip()
+        current_entries = [entry.strip() for entry in write_content.split('},') if entry.strip()]
 
-        if not updated:
+        # Determine the indentation
+        base_indent = ' ' * (write_start - content.rfind('\n', 0, write_start) - 1)
+        entry_indent = base_indent + '    '
+
+        # Update existing entries and add new ones
+        updated_entries = []
+        existing_emails = set()
+        for entry in current_entries:
+            email_start = entry.find('"Email": "') + 9
+            email_end = entry.find('"', email_start)
+            email = entry[email_start:email_end]
+            existing_emails.add(email)
+            
+            if email in emails:
+                # Update expiry for existing email
+                new_expiry = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                updated_entry = (f'{entry_indent}{{\n'
+                                 f'{entry_indent}    "Email": "{email}",\n'
+                                 f'{entry_indent}    "Expiry": "{new_expiry}"\n'
+                                 f'{entry_indent}}}')
+                updated_entries.append(updated_entry)
+            else:
+                updated_entries.append(f'{entry_indent}{entry}')
+
+        # Add new entries
+        for email in emails:
+            if email not in existing_emails:
+                new_expiry = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                new_entry = (f'{entry_indent}{{\n'
+                             f'{entry_indent}    "Email": "{email}",\n'
+                             f'{entry_indent}    "Expiry": "{new_expiry}"\n'
+                             f'{entry_indent}}}')
+                updated_entries.append(new_entry)
+
+        # Reconstruct the Write section
+        new_write_content = f'{base_indent}"Write": [\n' + ',\n'.join(updated_entries) + f'\n{base_indent}]'
+        updated_content = content[:write_start] + new_write_content + content[write_end+1:]
+
+        if updated_content == content:
             send_slack_message("No changes were needed in the statements.json file.")
             return
 
         # Create a new branch
-        base_branch = repo.get_branch("master")
+        base_branch = repo.get_branch("main")
         branch_name = f"update-breakglass-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
         repo.create_git_ref(ref=f"refs/heads/{branch_name}", sha=base_branch.commit.sha)
 
@@ -414,7 +438,7 @@ def update_github_and_create_pr(emails):
         repo.update_file(
             path=file_path,
             message="Update BreakGlass expiry dates and add new entries",
-            content=json.dumps(team_data, indent=2),
+            content=updated_content,
             sha=file_content.sha,
             branch=branch_name
         )
@@ -424,7 +448,7 @@ def update_github_and_create_pr(emails):
             title="Update BreakGlass expiry dates and add new entries",
             body="Automatically generated PR to update BreakGlass expiry dates and add new entries",
             head=branch_name,
-            base="master"
+            base="main"
         )
 
         send_slack_message(f"Created GitHub PR: {pr.html_url}")
