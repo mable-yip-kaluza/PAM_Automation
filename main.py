@@ -9,10 +9,10 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 import logging
 from jira import JIRA, JIRAError
-from slack_sdk.models.blocks import InputBlock, SectionBlock, ContextBlock
-from slack_sdk.models.blocks.block_elements import PlainTextInputElement
+from slack_sdk.models.blocks import InputBlock, SectionBlock, ActionsBlock
+from slack_sdk.models.blocks.block_elements import SelectElement, ButtonElement
 from slack_sdk.models.views import View
-from slack_sdk.models.blocks.basic_components import PlainTextObject, MarkdownTextObject
+from slack_sdk.models.blocks.basic_components import PlainTextObject, Option, OptionGroup
 from slack_sdk.errors import SlackApiError
 from github import Github, GithubException
 
@@ -41,6 +41,26 @@ GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
 GITHUB_REPO = os.getenv('GITHUB_REPO')
 
 team_email_lists = {}
+
+@app.route('/slack/team_search', methods=['POST'])
+def team_search():
+    payload = request.form
+    query = payload.get('value', '').lower()
+    
+    all_teams = get_team_folders()
+    matching_teams = [team for team in all_teams if query in team.lower()]
+    
+    options = [
+        {
+            "text": {"type": "plain_text", "text": team},
+            "value": team
+        }
+        for team in matching_teams[:100]  # Limit to 100 results
+    ]
+    
+    return jsonify({
+        "options": options
+    })
 
 @app.route('/slack/actions', methods=['POST'])
 def handle_interactions():
@@ -90,34 +110,18 @@ def handle_interactions():
             else:
                 response_message = "Unknown action"
                 return jsonify({"status": "error", "message": response_message})
-        else:
-            return jsonify({"status": "error", "message": "Unknown payload type"})
-    elif "trigger_id" in request.form:
-        return open_team_selection_modal(request.form['trigger_id'])
+    elif "command" in request.form and request.form["command"] == "/prod-access":
+        try:
+            slack_client.views_open(
+                trigger_id=request.form["trigger_id"],
+                view=get_team_selection_view()
+            )
+            return jsonify({"status": "success"})
+        except SlackApiError as e:
+            return jsonify({"status": "error", "error": str(e)})
     else:
         return jsonify({"status": "error", "message": "Invalid request"})
 
-def get_team_selection_view(team_name: str = "") -> View:
-    blocks = [
-        InputBlock(
-            block_id="team_name",
-            label=PlainTextObject(text="Team Name"),
-            element=PlainTextInputElement(
-                action_id="team_name_input",
-                placeholder=PlainTextObject(text="Enter the complete team name"),
-                initial_value=team_name
-            )
-        )
-    ]
-
-    return View(
-        type="modal",
-        callback_id="team_selection_modal",
-        title=PlainTextObject(text="Select Team"),
-        submit=PlainTextObject(text="Confirm"),
-        close=PlainTextObject(text="Cancel"),
-        blocks=blocks
-    )
 
 def open_team_selection_modal(trigger_id):
     try:
@@ -199,30 +203,87 @@ def post_email_list_message(team_name, emails):
         app.logger.error(f"Error posting email list message: {e}")
         return jsonify({"response_action": "errors", "errors": {"team_name": str(e)}})
     
+
 def handle_view_submission(payload):
     view = payload["view"]
-    if view["callback_id"] == "team_selection_modal":
-        # Handle team selection submission
-        team_name = view["state"]["values"]["team_name"]["team_name_input"]["value"]
-        app.logger.debug(f"Selected team: {team_name}")
-        
-        # Fetch the breakglass emails for the selected team
-        breakglass_emails = get_emails_from_github(team_name)
-        
-        # Post the initial email list message
-        return post_email_list_message(team_name, breakglass_emails)
+    selected_option = view["state"]["values"]["team_name"]["team_name_select"]["selected_option"]
+    team_name = selected_option["value"]
     
-    elif view["callback_id"] == "edit_people_modal":
-        # Handle email edit submission
-        updated_emails = view["state"]["values"]["email_list"]["email_input"]["value"].split("\n")
-        team_name = view.get("private_metadata", "Unknown Team")
-        
-        app.logger.info(f"Updated email list for team {team_name}: {updated_emails}")
-        
-        # Post an updated message with the new email list
-        return post_updated_email_list_message(team_name, updated_emails)
+    breakglass_emails = get_emails_from_github(team_name)
     
-    return jsonify({"response_action": "errors", "errors": {"email_list": "Invalid submission"}})
+    if not breakglass_emails:
+        return {
+            "response_action": "errors",
+            "errors": {
+                "team_name": "No BreakGlass emails found for this team. Please check the team name and try again."
+            }
+        }
+    
+    blocks = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Team:* {team_name}"}
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*Current BreakGlass emails:*"}
+        }
+    ]
+    
+    for email in breakglass_emails:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"• {email}"}
+        })
+    
+    blocks.extend([
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "Do you want to confirm production access for these emails?"}
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Confirm"},
+                    "style": "primary",
+                    "action_id": "confirm_prod_access"
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Edit People"},
+                    "action_id": "edit_people"
+                }
+            ]
+        }
+    ])
+    
+    # Store the email list for this team
+    team_email_lists[team_name] = breakglass_emails
+    
+    try:
+        result = slack_client.chat_postMessage(
+            channel=slack_channel,
+            text=f"Production access request for team {team_name}",
+            blocks=blocks,
+            metadata={
+                "event_type": "prod_access_request",
+                "event_payload": {
+                    "team_name": team_name
+                }
+            }
+        )
+        return {"response_action": "clear"}
+    except SlackApiError as e:
+        app.logger.error(f"Error posting message: {e}")
+        return {
+            "response_action": "errors",
+            "errors": {
+                "team_name": "An error occurred while processing your request. Please try again."
+            }
+        }
+    
 
 def post_updated_email_list_message(team_name, emails):
     global team_email_lists
@@ -520,6 +581,7 @@ def update_github_and_create_pr(emails):
             head=branch_name,
             base="main"
         )
+        
 
         send_slack_message(f"Created GitHub PR: {pr.html_url}")
 
@@ -527,6 +589,57 @@ def update_github_and_create_pr(emails):
         error_message = f"Failed to create GitHub PR: {str(e)}"
         app.logger.error(error_message)
         send_slack_message(error_message)
+
+
+def get_team_selection_view() -> View:
+    team_folders = get_team_folders()
+    
+    # Group teams alphabetically
+    team_groups = {}
+    for team in team_folders:
+        first_letter = team[0].upper()
+        if first_letter not in team_groups:
+            team_groups[first_letter] = []
+        team_groups[first_letter].append(team)
+    
+    # Create option groups
+    option_groups = []
+    for letter, teams in sorted(team_groups.items()):
+        options = [Option(text=PlainTextObject(text=team), value=team) for team in teams]
+        option_groups.append(OptionGroup(label=PlainTextObject(text=letter), options=options[:100]))
+    
+    blocks = [
+        InputBlock(
+            block_id="team_name",
+            label=PlainTextObject(text="Select Team"),
+            element=SelectElement(
+                placeholder=PlainTextObject(text="Choose a team"),
+                option_groups=option_groups,
+                action_id="team_name_select"
+            )
+        )
+    ]
+
+    return View(
+        type="modal",
+        callback_id="team_selection_modal",
+        title=PlainTextObject(text="Select Team"),
+        submit=PlainTextObject(text="Confirm"),
+        close=PlainTextObject(text="Cancel"),
+        blocks=blocks
+    )
+
+def get_team_folders():
+    try:
+        g = Github(os.getenv('GITHUB_TOKEN'))
+        repo = g.get_repo(os.getenv('GITHUB_REPO'))
+        contents = repo.get_contents("teams")
+        folders = [item.name for item in contents if item.type == "dir"]
+        app.logger.debug(f"Retrieved team folders: {folders}")
+        return folders
+    except Exception as e:
+        app.logger.error(f"Error retrieving team folders: {str(e)}")
+        return []
 
 if __name__ == "__main__":
     print("Starting Flask server")
