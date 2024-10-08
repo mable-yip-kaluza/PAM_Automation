@@ -112,16 +112,19 @@ def update_github_and_create_pr(team_name, emails, send_slack_message):
             base="main"
         )
 
-        send_slack_message(f"Created GitHub PR: {pr.html_url}")
+        # Extract PR number and create a clickable link
+        pr_number = pr.number
+        pr_link = f"<{pr.html_url}|PR-{pr_number}>"
 
         logger.info(f"Created GitHub PR: {pr.html_url}")
-        return {"success": True, "pr_url": pr.html_url}
+        message = f"PR created: {pr_link}"
+        return {"success": True, "message": message}
 
     except Exception as e:
         logger.error(f"Failed to create GitHub PR: {str(e)}")
         logger.error(f"Error type: {type(e).__name__}")
         logger.error(f"Error args: {e.args}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "message": str(e)}
 
 
 def get_emails_from_github(team_name):

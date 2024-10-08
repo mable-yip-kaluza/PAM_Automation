@@ -161,19 +161,6 @@ def post_confirmed_email_list_message(team_name, emails, pr_message, jira_messag
                         "type": "mrkdwn",
                         "text": jira_message
                     }
-                },
-                {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {
-                                "type": "plain_text",
-                                "text": "Edit People"
-                            },
-                            "action_id": "edit_people"
-                        }
-                    ]
                 }
             ],
             metadata={"event_type": "prod_access_request", "event_payload": {"team_name": team_name}}

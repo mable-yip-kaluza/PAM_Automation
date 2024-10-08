@@ -79,52 +79,7 @@ def handle_email_editing(view, team_email_lists, slack_client, slack_channel):
     team_email_lists[team_name] = new_emails
 
     # Show a preview of the changes
-    return post_email_preview_message(team_name, new_emails, slack_client, slack_channel)
-
-def post_email_preview_message(team_name, emails, slack_client, slack_channel):
-    try:
-        email_list = "\n• ".join(emails)
-        response = slack_client.chat_postMessage(
-            channel=slack_channel,
-            text=f"Preview of updated email list for team {team_name}",
-            blocks=[
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"Preview of updated email list for team *{team_name}*:\n\n• {email_list}"
-                    }
-                },
-                {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {
-                                "type": "plain_text",
-                                "text": "Confirm Changes"
-                            },
-                            "style": "primary",
-                            "action_id": "confirm_email_changes"
-                        },
-                        {
-                            "type": "button",
-                            "text": {
-                                "type": "plain_text",
-                                "text": "Edit Again"
-                            },
-                            "action_id": "edit_people"
-                        }
-                    ]
-                }
-            ],
-            metadata={"event_type": "prod_access_request", "event_payload": {"team_name": team_name}}
-        )
-        logger.debug(f"Posted email preview message: {response}")
-        return {"response_action": "clear"}
-    except SlackApiError as e:
-        logger.error(f"Error posting email preview message: {e}")
-        return {"response_action": "errors", "errors": {"email_list": "Failed to preview email list"}}
+    return post_email_list_message(team_name, new_emails, slack_client, slack_channel)
 
 
 def confirm_email_changes(team_name, team_email_lists, slack_client, slack_channel):
@@ -178,20 +133,13 @@ def confirm_prod_access(team_name, team_email_lists, slack_client, slack_channel
     
     # Initialize jira_result
     jira_result = {"success": False, "message": "Jira tickets were not created."}
-    
+
     # Update GitHub and create PR
     github_result = update_github_and_create_pr(team_name, breakglass_emails, send_slack_message)
     
     if github_result["success"]:
         # Create Jira tickets
         jira_result = create_jira_tickets(breakglass_emails, team_name)
-        
-        if jira_result["success"]:
-            response_message = f"Production access confirmed for next week. Jira tickets have been created. {github_result['pr_url']}"
-        else:
-            response_message = "GitHub update successful, but failed to create Jira tickets. Please try again or contact support."
-    else:
-        response_message = f"Failed to update GitHub. {github_result.get('error', 'Unknown error')}. Please try again or contact support."
 
-    return post_confirmed_email_list_message(team_name, breakglass_emails, response_message, jira_result.get("message", ""), slack_client, slack_channel)
+    return post_confirmed_email_list_message(team_name, breakglass_emails,  github_result.get("message", ""), jira_result.get("message", ""), slack_client, slack_channel)
         
