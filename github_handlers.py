@@ -1,13 +1,11 @@
 import os
 from github import Github
+from config import GITHUB_TOKEN, GITHUB_REPO
 from utils import logger
 from datetime import datetime, timedelta
 import base64
 from github import Github, GithubException
 import json
-
-GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
-GITHUB_REPO = os.getenv('GITHUB_REPO')
 
 
 def get_team_folders():
@@ -25,12 +23,16 @@ def get_team_folders():
 
 def update_github_and_create_pr(team_name, emails, send_slack_message):
     try:
+        logger.info(f"GITHUB_REPO environment variable: {GITHUB_REPO}")
         g = Github(GITHUB_TOKEN)
         repo = g.get_repo(GITHUB_REPO)
+        logger.info(f"Successfully connected to GitHub repo: {repo.full_name}")
 
         # Get the content of the file
         file_path = f"teams/{team_name}/{team_name}.json"
+        logger.info(f"Attempting to get contents of file: {file_path}")
         file_content = repo.get_contents(file_path)
+        logger.info("Successfully retrieved file contents")
 
         content = file_content.decoded_content.decode()
 
@@ -89,7 +91,9 @@ def update_github_and_create_pr(team_name, emails, send_slack_message):
         # Create a new branch
         base_branch = repo.get_branch("main")
         branch_name = f"update-breakglass-{team_name}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        logger.info(f"Attempting to create new branch: {branch_name}")
         repo.create_git_ref(ref=f"refs/heads/{branch_name}", sha=base_branch.commit.sha)
+        logger.info(f"Successfully created new branch: {branch_name}")
 
         # Update the file in the new branch
         repo.update_file(
@@ -115,6 +119,8 @@ def update_github_and_create_pr(team_name, emails, send_slack_message):
 
     except Exception as e:
         logger.error(f"Failed to create GitHub PR: {str(e)}")
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error args: {e.args}")
         return {"success": False, "error": str(e)}
 
 
