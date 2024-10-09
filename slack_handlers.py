@@ -100,7 +100,7 @@ def confirm_email_changes(team_name, team_email_lists, slack_client, slack_chann
     if not emails:
         return jsonify({"response_action": "errors", "errors": {"general": "No email list found for this team."}})
 
-    result = update_github_and_create_pr(team_name, emails, send_slack_message)
+    result = update_github_and_create_pr(team_name, emails)
     if result["success"]:
         # Create Jira tickets
         jira_result = create_jira_tickets(emails, team_name)
@@ -153,7 +153,7 @@ def confirm_prod_access(team_name, team_email_lists, slack_client, slack_channel
         jira_result = {"success": False, "message": "Jira tickets were not created."}
 
         # Update GitHub and create PR
-        github_result = update_github_and_create_pr(team_name, breakglass_emails, send_slack_message)
+        github_result = update_github_and_create_pr(team_name, breakglass_emails)
         
         if github_result["success"]:
             # Create Jira tickets

@@ -20,7 +20,7 @@ def get_team_folders():
         logger.error(f"Error retrieving team folders: {str(e)}")
         return []
     
-def update_github_and_create_pr(team_name, emails, send_slack_message):
+def update_github_and_create_pr(team_name, emails):
     try:
         logger.info(f"GITHUB_REPO environment variable: {GITHUB_REPO}")
         g = Github(GITHUB_TOKEN)
@@ -74,11 +74,9 @@ def update_github_and_create_pr(team_name, emails, send_slack_message):
 
         if prs_created:
             message = f"PRs created: {', '.join(prs_created)}"
-            send_slack_message(message)
             return {"success": True, "message": message}
         else:
             message = "No changes were needed in the statements.json file."
-            send_slack_message(message)
             return {"success": True, "message": message}
 
     except Exception as e:
@@ -88,48 +86,41 @@ def update_github_and_create_pr(team_name, emails, send_slack_message):
         return {"success": False, "message": str(e)}
 
 def update_content_for_email(content, email):
-    breakglass_start = content.find('"BreakGlass": {')
-    write_start = content.find('"Write": [', breakglass_start)
-    write_end = content.find(']', write_start)
-    
-    write_content = content[write_start+10:write_end].strip()
-    current_entries = [entry.strip() for entry in write_content.split('},') if entry.strip()]
+    try:
+        content_dict = json.loads(content)
+    except json.JSONDecodeError:
+        logger.error("Invalid JSON content")
+        return content
 
-    base_indent = ' ' * (write_start - content.rfind('\n', 0, write_start) - 1)
-    entry_indent = base_indent + '    '
+    updated = False
+    for aws_account in content_dict.get('Resources', {}).get('Aws', []):
+        if aws_account.get('Production', False) and 'BreakGlass' in aws_account:
+            breakglass = aws_account['BreakGlass']
+            write_list = breakglass.get('Write', [])
 
-    updated_entries = []
-    email_updated = False
+            # Update existing email or add new one
+            email_updated = False
+            for entry in write_list:
+                if entry.get('Email') == email:
+                    entry['Expiry'] = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    email_updated = True
+                    updated = True
+                    break
+            
+            if not email_updated:
+                write_list.append({
+                    "Email": email,
+                    "Expiry": (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                })
+                updated = True
+            
+            breakglass['Write'] = write_list
 
-    for entry in current_entries:
-        email_start = entry.find('"Email": "') + 9
-        email_end = entry.find('"', email_start)
-        current_email = entry[email_start:email_end]
-        
-        if current_email == email:
-            new_expiry = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            updated_entry = (f'{entry_indent}{{\n'
-                             f'{entry_indent}    "Email": "{email}",\n'
-                             f'{entry_indent}    "Expiry": "{new_expiry}"\n'
-                             f'{entry_indent}}}')
-            updated_entries.append(updated_entry)
-            email_updated = True
-        else:
-            updated_entries.append(f'{entry_indent}{entry}')
+    if not updated:
+        logger.warning(f"No BreakGlass section found or updated for email: {email}")
 
-    if not email_updated:
-        new_expiry = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        new_entry = (f'{entry_indent}{{\n'
-                     f'{entry_indent}    "Email": "{email}",\n'
-                     f'{entry_indent}    "Expiry": "{new_expiry}"\n'
-                     f'{entry_indent}}}')
-        updated_entries.append(new_entry)
-
-    new_write_content = f'{base_indent}"Write": [\n' + ',\n'.join(updated_entries) + f'\n{base_indent}]'
-    updated_content = content[:write_start] + new_write_content + content[write_end+1:]
-
+    updated_content = json.dumps(content_dict, indent=4)+ '\n' 
     return updated_content
-
 
 def get_emails_from_github(team_name):
     try:
