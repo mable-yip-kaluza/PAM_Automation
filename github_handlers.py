@@ -20,7 +20,6 @@ def get_team_folders():
         logger.error(f"Error retrieving team folders: {str(e)}")
         return []
     
-
 def update_github_and_create_pr(team_name, emails, send_slack_message):
     try:
         logger.info(f"GITHUB_REPO environment variable: {GITHUB_REPO}")
@@ -28,7 +27,6 @@ def update_github_and_create_pr(team_name, emails, send_slack_message):
         repo = g.get_repo(GITHUB_REPO)
         logger.info(f"Successfully connected to GitHub repo: {repo.full_name}")
 
-        # Get the content of the file
         file_path = f"teams/{team_name}/{team_name}.json"
         logger.info(f"Attempting to get contents of file: {file_path}")
         file_content = repo.get_contents(file_path)
@@ -36,95 +34,101 @@ def update_github_and_create_pr(team_name, emails, send_slack_message):
 
         content = file_content.decoded_content.decode()
 
-        # Find the BreakGlass Write section
-        breakglass_start = content.find('"BreakGlass": {')
-        write_start = content.find('"Write": [', breakglass_start)
-        write_end = content.find(']', write_start)
-        
-        # Extract the current Write entries
-        write_content = content[write_start+10:write_end].strip()
-        current_entries = [entry.strip() for entry in write_content.split('},') if entry.strip()]
-
-        # Determine the indentation
-        base_indent = ' ' * (write_start - content.rfind('\n', 0, write_start) - 1)
-        entry_indent = base_indent + '    '
-
-        # Update existing entries and add new ones
-        updated_entries = []
-        existing_emails = set()
-        for entry in current_entries:
-            email_start = entry.find('"Email": "') + 9
-            email_end = entry.find('"', email_start)
-            email = entry[email_start:email_end]
-            existing_emails.add(email)
-            
-            if email in emails:
-                # Update expiry for existing email
-                new_expiry = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-                updated_entry = (f'{entry_indent}{{\n'
-                                 f'{entry_indent}    "Email": "{email}",\n'
-                                 f'{entry_indent}    "Expiry": "{new_expiry}"\n'
-                                 f'{entry_indent}}}')
-                updated_entries.append(updated_entry)
-            else:
-                updated_entries.append(f'{entry_indent}{entry}')
-
-        # Add new entries
-        for email in emails:
-            if email not in existing_emails:
-                new_expiry = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-                new_entry = (f'{entry_indent}{{\n'
-                             f'{entry_indent}    "Email": "{email}",\n'
-                             f'{entry_indent}    "Expiry": "{new_expiry}"\n'
-                             f'{entry_indent}}}')
-                updated_entries.append(new_entry)
-
-        # Reconstruct the Write section
-        new_write_content = f'{base_indent}"Write": [\n' + ',\n'.join(updated_entries) + f'\n{base_indent}]'
-        updated_content = content[:write_start] + new_write_content + content[write_end+1:]
-
-        if updated_content == content:
-            send_slack_message("No changes were needed in the statements.json file.")
-            return
-
-
-        # Create a new branch
         base_branch = repo.get_branch("main")
-        branch_name = f"update-breakglass-{team_name}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
-        logger.info(f"Attempting to create new branch: {branch_name}")
-        repo.create_git_ref(ref=f"refs/heads/{branch_name}", sha=base_branch.commit.sha)
-        logger.info(f"Successfully created new branch: {branch_name}")
+        prs_created = []
 
-        # Update the file in the new branch
-        repo.update_file(
-            path=file_path,
-            message=f"Update BreakGlass emails for {team_name}",
-            content=updated_content,
-            sha=file_content.sha,
-            branch=branch_name
-        )
+        for email in emails:
+            # Create a new branch for each email
+            branch_name = f"update-breakglass-{team_name}-{email.split('@')[0]}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            logger.info(f"Attempting to create new branch: {branch_name}")
+            repo.create_git_ref(ref=f"refs/heads/{branch_name}", sha=base_branch.commit.sha)
+            logger.info(f"Successfully created new branch: {branch_name}")
 
-        # Create a pull request
-        pr = repo.create_pull(
-            title=f"Update BreakGlass emails for {team_name}",
-            body="Automatically generated PR to update BreakGlass emails",
-            head=branch_name,
-            base="main"
-        )
+            # Update content for this email
+            updated_content = update_content_for_email(content, email)
 
-        # Extract PR number and create a clickable link
-        pr_number = pr.number
-        pr_link = f"<{pr.html_url}|PR-{pr_number}>"
+            if updated_content == content:
+                logger.info(f"No changes needed for email: {email}")
+                continue
 
-        logger.info(f"Created GitHub PR: {pr.html_url}")
-        message = f"PR created: {pr_link}"
-        return {"success": True, "message": message}
+            # Update the file in the new branch
+            repo.update_file(
+                path=file_path,
+                message=f"Update BreakGlass email for {team_name}: {email}",
+                content=updated_content,
+                sha=file_content.sha,
+                branch=branch_name
+            )
+
+            # Create a pull request for this email
+            pr = repo.create_pull(
+                title=f"Update BreakGlass email for {team_name}: {email}",
+                body=f"Automatically generated PR to update BreakGlass email: {email}",
+                head=branch_name,
+                base="main"
+            )
+
+            pr_link = f"<{pr.html_url}|PR-{pr.number}>"
+            logger.info(f"Created GitHub PR: {pr.html_url}")
+            prs_created.append(pr_link)
+
+        if prs_created:
+            message = f"PRs created: {', '.join(prs_created)}"
+            send_slack_message(message)
+            return {"success": True, "message": message}
+        else:
+            message = "No changes were needed in the statements.json file."
+            send_slack_message(message)
+            return {"success": True, "message": message}
 
     except Exception as e:
         logger.error(f"Failed to create GitHub PR: {str(e)}")
         logger.error(f"Error type: {type(e).__name__}")
         logger.error(f"Error args: {e.args}")
         return {"success": False, "message": str(e)}
+
+def update_content_for_email(content, email):
+    breakglass_start = content.find('"BreakGlass": {')
+    write_start = content.find('"Write": [', breakglass_start)
+    write_end = content.find(']', write_start)
+    
+    write_content = content[write_start+10:write_end].strip()
+    current_entries = [entry.strip() for entry in write_content.split('},') if entry.strip()]
+
+    base_indent = ' ' * (write_start - content.rfind('\n', 0, write_start) - 1)
+    entry_indent = base_indent + '    '
+
+    updated_entries = []
+    email_updated = False
+
+    for entry in current_entries:
+        email_start = entry.find('"Email": "') + 9
+        email_end = entry.find('"', email_start)
+        current_email = entry[email_start:email_end]
+        
+        if current_email == email:
+            new_expiry = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            updated_entry = (f'{entry_indent}{{\n'
+                             f'{entry_indent}    "Email": "{email}",\n'
+                             f'{entry_indent}    "Expiry": "{new_expiry}"\n'
+                             f'{entry_indent}}}')
+            updated_entries.append(updated_entry)
+            email_updated = True
+        else:
+            updated_entries.append(f'{entry_indent}{entry}')
+
+    if not email_updated:
+        new_expiry = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        new_entry = (f'{entry_indent}{{\n'
+                     f'{entry_indent}    "Email": "{email}",\n'
+                     f'{entry_indent}    "Expiry": "{new_expiry}"\n'
+                     f'{entry_indent}}}')
+        updated_entries.append(new_entry)
+
+    new_write_content = f'{base_indent}"Write": [\n' + ',\n'.join(updated_entries) + f'\n{base_indent}]'
+    updated_content = content[:write_start] + new_write_content + content[write_end+1:]
+
+    return updated_content
 
 
 def get_emails_from_github(team_name):

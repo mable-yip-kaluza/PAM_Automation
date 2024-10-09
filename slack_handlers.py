@@ -1,12 +1,15 @@
 import json
 import os
 from flask import jsonify
+from flask.views import View
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from github_handlers import get_emails_from_github, update_github_and_create_pr
 from jira_handlers import create_jira_tickets
 from utils import logger
 from views import get_team_selection_view, open_edit_modal, post_email_list_message, post_confirmed_email_list_message
+import threading
+from flask import current_app
 
 def handle_slack_interactions(form_data, logger, slack_client, slack_channel, team_email_lists):
     payload = json.loads(form_data["payload"])
@@ -40,7 +43,17 @@ def handle_block_actions(payload, logger, slack_client, slack_channel, team_emai
     elif action_id == 'confirm_email_changes':
         return confirm_email_changes(team_name, team_email_lists, slack_client, slack_channel)
     elif action_id == 'confirm_prod_access':
-        return confirm_prod_access(team_name, team_email_lists, slack_client, slack_channel)
+        slack_client.chat_postMessage(
+            channel=slack_channel,
+            text=f":hourglass_flowing_sand: Processing production access request for team {team_name}. This may take a few moments..."
+        )
+        
+        # Start the confirm_prod_access function in a separate thread with app context
+        app = current_app._get_current_object()  # Get the actual app object
+        threading.Thread(target=confirm_prod_access_with_context, args=(app, team_name, team_email_lists, slack_client, slack_channel, payload)).start()
+        
+        # Return an empty response to acknowledge the action
+        return jsonify({"response_action": "clear"})
     else:
         return jsonify({"status": "error", "message": "Unknown action"})
 
@@ -127,19 +140,32 @@ def send_slack_message(message):
     except SlackApiError as e:
         logger.error(f"Error sending Slack message: {e}")
 
-def confirm_prod_access(team_name, team_email_lists, slack_client, slack_channel):
-    # Get the current email list for the team
-    breakglass_emails = team_email_lists.get(team_name, get_emails_from_github(team_name))
-    
-    # Initialize jira_result
-    jira_result = {"success": False, "message": "Jira tickets were not created."}
+def confirm_prod_access_with_context(app, team_name, team_email_lists, slack_client, slack_channel, payload):
+    with app.app_context():
+        confirm_prod_access(team_name, team_email_lists, slack_client, slack_channel, payload)
 
-    # Update GitHub and create PR
-    github_result = update_github_and_create_pr(team_name, breakglass_emails, send_slack_message)
-    
-    if github_result["success"]:
-        # Create Jira tickets
-        jira_result = create_jira_tickets(breakglass_emails, team_name)
-
-    return post_confirmed_email_list_message(team_name, breakglass_emails,  github_result.get("message", ""), jira_result.get("message", ""), slack_client, slack_channel)
+def confirm_prod_access(team_name, team_email_lists, slack_client, slack_channel, payload):
+    try:
+        # Get the current email list for the team
+        breakglass_emails = team_email_lists.get(team_name, get_emails_from_github(team_name))
         
+        # Initialize jira_result
+        jira_result = {"success": False, "message": "Jira tickets were not created."}
+
+        # Update GitHub and create PR
+        github_result = update_github_and_create_pr(team_name, breakglass_emails, send_slack_message)
+        
+        if github_result["success"]:
+            # Create Jira tickets
+            jira_result = create_jira_tickets(breakglass_emails, team_name)
+    
+        # Post the confirmed email list message
+        post_confirmed_email_list_message(team_name, breakglass_emails, github_result.get("message", ""), jira_result.get("message", ""), slack_client, slack_channel)
+
+    except Exception as e:
+        # If an error occurs, send an error message
+        slack_client.chat_postMessage(
+            channel=slack_channel,
+            text=f":x: An error occurred while processing production access request for team {team_name}: {str(e)}"
+        )
+        current_app.logger.error(f"Error in confirm_prod_access: {str(e)}")
