@@ -49,7 +49,7 @@ def update_github_and_create_pr(team_name, emails):
 
             if updated_content == content:
                 logger.info(f"No changes needed for email: {email}")
-                continue
+                return {"success": True, "message": updated_content.message}
 
             # Update the file in the new branch
             repo.update_file(
@@ -75,9 +75,6 @@ def update_github_and_create_pr(team_name, emails):
         if prs_created:
             message = f"PRs created: {', '.join(prs_created)}"
             return {"success": True, "message": message}
-        else:
-            message = "No changes were needed in the statements.json file."
-            return {"success": True, "message": message}
 
     except Exception as e:
         logger.error(f"Failed to create GitHub PR: {str(e)}")
@@ -93,33 +90,54 @@ def update_content_for_email(content, email):
         return content
 
     updated = False
-    for aws_account in content_dict.get('Resources', {}).get('Aws', []):
-        if aws_account.get('Production', False) and 'BreakGlass' in aws_account:
-            breakglass = aws_account['BreakGlass']
-            write_list = breakglass.get('Write', [])
+    expiry_date = datetime.utcnow() + timedelta(days=7)
 
-            # Update existing email or add new one
-            email_updated = False
-            for entry in write_list:
-                if entry.get('Email') == email:
-                    entry['Expiry'] = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    email_updated = True
-                    updated = True
-                    break
-            
-            if not email_updated:
-                write_list.append({
-                    "Email": email,
-                    "Expiry": (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-                })
+    for aws_account in content_dict.get('Resources', {}).get('Aws', []):
+        if aws_account.get('Production', False):
+            if 'BreakGlass' not in aws_account:
+                # Add BreakGlass section if it doesn't exist
+                aws_account['BreakGlass'] = {
+                    "Write": [
+                        {
+                            "Email": email,
+                            "Expiry": expiry_date
+                        }
+                    ]
+                }
                 updated = True
-            
-            breakglass['Write'] = write_list
+            else:
+                breakglass = aws_account['BreakGlass']
+                write_list = breakglass.get('Write', [])
+
+                # Update existing email or add new one
+                email_updated = False
+                for entry in write_list:
+                    if entry.get('Email') == email:
+                        entry['Expiry'] = expiry_date
+                        email_updated = True
+                        updated = True
+                        break
+                
+                if not email_updated:
+                    write_list.append({
+                        "Email": email,
+                        "Expiry": expiry_date
+                    })
+                    updated = True
+                
+                breakglass['Write'] = write_list
 
     if not updated:
-        logger.warning(f"No BreakGlass section found or updated for email: {email}")
+        logger.warning(f"No production AWS account found for the team")
 
-    updated_content = json.dumps(content_dict, indent=4)+ '\n' 
+    # Custom JSON encoder to handle datetime objects
+    class DateTimeEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, datetime):
+                return obj.strftime("%Y-%m-%dT%H:%M:%SZ")
+            return super().default(obj)
+
+    updated_content = json.dumps(content_dict, indent=4, cls=DateTimeEncoder) + '\n'
     return updated_content
 
 def get_emails_from_github(team_name):
@@ -139,6 +157,7 @@ def get_emails_from_github(team_name):
             logger.debug(f"Parsed JSON data: {json.dumps(data, indent=2)}")
             
             breakglass_emails = []
+
             if 'Resources' in data and 'Aws' in data['Resources']:
                 for aws_account in data['Resources']['Aws']:
                     if 'Production' in aws_account and aws_account['Production']:
@@ -147,16 +166,15 @@ def get_emails_from_github(team_name):
                                 if 'Email' in entry:
                                     breakglass_emails.append(entry['Email'])
                                     logger.debug(f"Added email: {entry['Email']}")
-            
-            if not breakglass_emails:
-                logger.warning("No BreakGlass emails found for production AWS accounts")
+                    else:
+                        raise ValueError("No AWS production environment found")
             
             logger.debug(f"Extracted emails: {breakglass_emails}")
             
             return breakglass_emails
         except GithubException as e:
             logger.error(f"Error fetching file from GitHub: {e}")
-            return []
+            raise
     except Exception as e:
-        logger.error(f"Error connecting to GitHub: {str(e)}")
-        return []
+        logger.error(f"Error in get_emails_from_github: {str(e)}")
+        raise

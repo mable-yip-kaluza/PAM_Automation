@@ -71,17 +71,16 @@ def handle_team_selection(view, slack_client, slack_channel):
     selected_option = view["state"]["values"]["team_name"]["team_name_select"]["selected_option"]
     team_name = selected_option["value"]
     
-    breakglass_emails = get_emails_from_github(team_name)
-    
-    if not breakglass_emails:
-        return {
-            "response_action": "errors",
-            "errors": {
-                "team_name": "No BreakGlass emails found for this team. Please check the team name and try again."
-            }
-        }
-    
-    return post_email_list_message(team_name, breakglass_emails, slack_client, slack_channel)
+    try:
+        breakglass_emails = get_emails_from_github(team_name)
+        return post_email_list_message(team_name, breakglass_emails, slack_client, slack_channel)
+    except ValueError as e:
+        send_slack_message(f"Error: {str(e)}")
+        return jsonify({"response_action": "clear"})
+    except Exception as e:
+        logger.error(f"Unexpected error in handle_team_selection: {str(e)}")
+        send_slack_message("An unexpected error occurred. Please try again or contact support.")
+        return jsonify({"response_action": "clear"})
 
 def handle_email_editing(view, team_email_lists, slack_client, slack_channel):
     team_name = view["private_metadata"]
