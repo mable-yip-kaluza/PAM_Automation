@@ -47,7 +47,7 @@ def handle_block_actions(payload, logger, slack_client, slack_channel, team_emai
     elif action_id == 'confirm_prod_access':
         slack_client.chat_postMessage(
             channel=slack_channel,
-            text=f":hourglass_flowing_sand: Processing production access request for team {team_name}. This may take a few moments..."
+            text=f"Processing production access request for team {team_name}. This may take a few moments...:hourglass_flowing_sand:"
         )
         
         # Start the confirm_prod_access function in a separate thread with app context
@@ -167,7 +167,7 @@ def confirm_prod_access(team_name, team_email_lists, slack_client, slack_channel
             text=f":x: An error occurred while processing production access request for team {team_name}: {str(e)}"
         )
         current_app.logger.error(f"Error in confirm_prod_access: {str(e)}")
-        
+
 def send_pr_approved_message(pr_number, pr_title, pr_url, approver, slack_client, slack_channel):
     try:
         message = f":white_check_mark: Pull Request #{pr_number} has been approved!\n" \

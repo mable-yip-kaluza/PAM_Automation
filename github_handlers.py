@@ -35,7 +35,7 @@ def update_github_and_create_pr(team_name, emails):
 
         content = file_content.decoded_content.decode()
 
-        base_branch = repo.get_branch("main")
+        base_branch = repo.get_branch("master")
         prs_created = []
 
         for email in emails:
@@ -69,11 +69,11 @@ def update_github_and_create_pr(team_name, emails):
                 title=f"Update BreakGlass email for {team_name}: {email}",
                 body=pr_body,
                 head=branch_name,
-                base="main"
+                base="master"
             )
 
             # Add metadata to the PR
-            pr.add_to_labels("breakglass-update")
+            pr.add_to_labels("firebreak-project")
 
 
             # Get team-specific configuration

@@ -145,7 +145,7 @@ def post_confirmed_email_list_message(team_name, emails, pr_message, jira_messag
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f":white_check_mark: Confirmed updated email list for team *{team_name}*:\n\n• {email_list}"
+                        "text": f"Confirmed updated email list for team *{team_name}*, waiting for manager's approval :clock1::\n\n• {email_list}"
                     }
                 },
                 {
