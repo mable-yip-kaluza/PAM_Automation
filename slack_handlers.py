@@ -6,7 +6,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from github_handlers import get_emails_from_github, update_github_and_create_pr
 from jira_handlers import create_jira_tickets
-from utils import logger
+from utils import logger, send_slack_message
 from views import get_team_selection_view, open_edit_modal, post_email_list_message, post_confirmed_email_list_message
 import threading
 from flask import current_app
@@ -75,11 +75,11 @@ def handle_team_selection(view, slack_client, slack_channel):
         breakglass_emails = get_emails_from_github(team_name)
         return post_email_list_message(team_name, breakglass_emails, slack_client, slack_channel)
     except ValueError as e:
-        send_slack_message(f"Error: {str(e)}")
+        send_slack_message(f"Error: {str(e)}", slack_client)
         return jsonify({"response_action": "clear"})
     except Exception as e:
         logger.error(f"Unexpected error in handle_team_selection: {str(e)}")
-        send_slack_message("An unexpected error occurred. Please try again or contact support.")
+        send_slack_message("An unexpected error occurred. Please try again or contact support.", slack_client)
         return jsonify({"response_action": "clear"})
 
 def handle_email_editing(view, team_email_lists, slack_client, slack_channel):
@@ -117,27 +117,7 @@ def confirm_email_changes(team_name, team_email_lists, slack_client, slack_chann
             }
         })
     
-def send_slack_message(message):
-    try:
-        slack_token = os.getenv('SLACK_TOKEN')
-        slack_client = WebClient(token=slack_token)
-        # Slack channel
-        slack_channel = os.getenv('SLACK_CHANNEL')
-        slack_client.chat_postMessage(
-            channel=slack_channel,
-            text=message,
-            blocks=[
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": message
-                    }
-                }
-            ]
-        )
-    except SlackApiError as e:
-        logger.error(f"Error sending Slack message: {e}")
+
 
 def confirm_prod_access_with_context(app, team_name, team_email_lists, slack_client, slack_channel, payload):
     with app.app_context():
@@ -168,3 +148,6 @@ def confirm_prod_access(team_name, team_email_lists, slack_client, slack_channel
             text=f":x: An error occurred while processing production access request for team {team_name}: {str(e)}"
         )
         current_app.logger.error(f"Error in confirm_prod_access: {str(e)}")
+
+
+    

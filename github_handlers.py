@@ -90,54 +90,33 @@ def update_content_for_email(content, email):
         return content
 
     updated = False
-    expiry_date = datetime.utcnow() + timedelta(days=7)
-
     for aws_account in content_dict.get('Resources', {}).get('Aws', []):
-        if aws_account.get('Production', False):
-            if 'BreakGlass' not in aws_account:
-                # Add BreakGlass section if it doesn't exist
-                aws_account['BreakGlass'] = {
-                    "Write": [
-                        {
-                            "Email": email,
-                            "Expiry": expiry_date
-                        }
-                    ]
-                }
-                updated = True
-            else:
-                breakglass = aws_account['BreakGlass']
-                write_list = breakglass.get('Write', [])
+        if aws_account.get('Production', False) and 'BreakGlass' in aws_account:
+            breakglass = aws_account['BreakGlass']
+            write_list = breakglass.get('Write', [])
 
-                # Update existing email or add new one
-                email_updated = False
-                for entry in write_list:
-                    if entry.get('Email') == email:
-                        entry['Expiry'] = expiry_date
-                        email_updated = True
-                        updated = True
-                        break
-                
-                if not email_updated:
-                    write_list.append({
-                        "Email": email,
-                        "Expiry": expiry_date
-                    })
+            # Update existing email or add new one
+            email_updated = False
+            for entry in write_list:
+                if entry.get('Email') == email:
+                    entry['Expiry'] = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    email_updated = True
                     updated = True
-                
-                breakglass['Write'] = write_list
+                    break
+            
+            if not email_updated:
+                write_list.append({
+                    "Email": email,
+                    "Expiry": (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                })
+                updated = True
+            
+            breakglass['Write'] = write_list
 
     if not updated:
-        logger.warning(f"No production AWS account found for the team")
+        logger.warning(f"No BreakGlass section found or updated for email: {email}")
 
-    # Custom JSON encoder to handle datetime objects
-    class DateTimeEncoder(json.JSONEncoder):
-        def default(self, obj):
-            if isinstance(obj, datetime):
-                return obj.strftime("%Y-%m-%dT%H:%M:%SZ")
-            return super().default(obj)
-
-    updated_content = json.dumps(content_dict, indent=4, cls=DateTimeEncoder) + '\n'
+    updated_content = json.dumps(content_dict, indent=4)+ '\n'
     return updated_content
 
 def get_emails_from_github(team_name):
