@@ -150,4 +150,26 @@ def confirm_prod_access(team_name, team_email_lists, slack_client, slack_channel
         current_app.logger.error(f"Error in confirm_prod_access: {str(e)}")
 
 
-    
+def send_pr_approved_message(pr_number, pr_title, pr_url, approver, slack_client, slack_channel):
+    try:
+        message = f":white_check_mark: Pull Request #{pr_number} has been approved!\n" \
+                  f"*Title:* {pr_title}\n" \
+                  f"*Approved by:* {approver}\n" \
+                  f"*PR Link:* <{pr_url}|View PR>"
+
+        slack_client.chat_postMessage(
+            channel=slack_channel,
+            text=message,
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": message
+                    }
+                }
+            ]
+        )
+        logger.info(f"Sent PR approved message for PR #{pr_number}")
+    except Exception as e:
+        logger.error(f"Error sending PR approved message: {str(e)}")

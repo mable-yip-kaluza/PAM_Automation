@@ -1,12 +1,13 @@
 import os
 from github import Github
-from config import GITHUB_TOKEN, GITHUB_REPO
+from config import GITHUB_TOKEN, GITHUB_REPO, GITHUB_WEBHOOK_SECRET, MANAGER_GITHUB_USERNAME
 from utils import logger
 from datetime import datetime, timedelta
 import base64
 from github import Github, GithubException
 import json
-
+import hmac
+import hashlib
 
 def get_team_folders():
     try:
@@ -67,6 +68,13 @@ def update_github_and_create_pr(team_name, emails):
                 head=branch_name,
                 base="main"
             )
+
+            # Add metadata to the PR
+            pr.add_to_labels("breakglass-update")
+
+
+            # Add manager to be the reviewer
+            pr.create_review_request(reviewers=[MANAGER_GITHUB_USERNAME])
 
             pr_link = f"<{pr.html_url}|PR-{pr.number}>"
             logger.info(f"Created GitHub PR: {pr.html_url}")
@@ -160,3 +168,16 @@ def get_emails_from_github(team_name):
     except Exception as e:
         logger.error(f"Error in get_emails_from_github: {str(e)}")
         raise
+
+def verify_github_webhook(request):
+    signature = request.headers.get('X-Hub-Signature-256')
+    if not signature:
+        return False
+
+    expected_signature = 'sha256=' + hmac.new(
+        GITHUB_WEBHOOK_SECRET.encode(),
+        request.data,
+        hashlib.sha256
+    ).hexdigest()
+
+    return hmac.compare_digest(signature, expected_signature)
