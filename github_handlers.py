@@ -158,16 +158,19 @@ def get_emails_from_github(team_name):
             
             breakglass_emails = []
 
+            prod_env_found = False
+
             if 'Resources' in data and 'Aws' in data['Resources']:
                 for aws_account in data['Resources']['Aws']:
                     if 'Production' in aws_account and aws_account['Production']:
+                        prod_env_found = True
                         if 'BreakGlass' in aws_account and 'Write' in aws_account['BreakGlass']:
                             for entry in aws_account['BreakGlass']['Write']:
                                 if 'Email' in entry:
                                     breakglass_emails.append(entry['Email'])
                                     logger.debug(f"Added email: {entry['Email']}")
-                    else:
-                        raise ValueError("No AWS production environment found")
+            if not prod_env_found:
+                raise ValueError("No AWS production environment found")
             
             logger.debug(f"Extracted emails: {breakglass_emails}")
             
