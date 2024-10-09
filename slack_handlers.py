@@ -2,9 +2,11 @@ import json
 import os
 from flask import jsonify
 from flask.views import View
+from github import Github
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
-from github_handlers import get_emails_from_github, update_github_and_create_pr
+from config import GITHUB_REPO, GITHUB_TOKEN, JIRA_SERVER
+from github_handlers import get_emails_from_github, update_github_and_create_pr, update_pr_with_jira_link
 from jira_handlers import create_jira_tickets
 from utils import logger, send_slack_message
 from views import get_team_selection_view, open_edit_modal, post_email_list_message, post_confirmed_email_list_message
@@ -123,23 +125,40 @@ def confirm_prod_access_with_context(app, team_name, team_email_lists, slack_cli
     with app.app_context():
         confirm_prod_access(team_name, team_email_lists, slack_client, slack_channel, payload)
 
+
 def confirm_prod_access(team_name, team_email_lists, slack_client, slack_channel, payload):
     try:
-        # Get the current email list for the team
         breakglass_emails = team_email_lists.get(team_name, get_emails_from_github(team_name))
         
-        # Initialize jira_result
-        jira_result = {"success": False, "message": "Jira tickets were not created."}
-
-        # Update GitHub and create PR
+        # Create PRs first
         github_result = update_github_and_create_pr(team_name, breakglass_emails)
         
         if github_result["success"]:
-            # Create Jira tickets
-            jira_result = create_jira_tickets(breakglass_emails, team_name)
+            # Create Jira tickets, passing PR information
+            jira_result = create_jira_tickets(breakglass_emails, team_name, github_result["prs"])
+            
+            if jira_result["success"]:
+                # Update PRs with Jira ticket links
+                g = Github(GITHUB_TOKEN)
+                repo = g.get_repo(GITHUB_REPO)
+                for ticket in jira_result["tickets"]:
+                    jira_link = f"{JIRA_SERVER}/browse/{ticket['key']}"
+                    update_pr_with_jira_link(repo, ticket["pr_number"], jira_link)
+                
+                pr_links = [pr['link'] for pr in github_result['prs']]
+                pr_message = f"PRs created: {', '.join(pr_links)}"
+                
+                jira_links = [f"<{JIRA_SERVER}/browse/{ticket['key']}|{ticket['key']}>" for ticket in jira_result['tickets']]
+                jira_message = f"Jira tickets created: {', '.join(jira_links)}"
+            else:
+                pr_message = f"PRs created, but Jira ticket creation failed: {jira_result['message']}"
+                jira_message = "No Jira tickets created"
+        else:
+            pr_message = f"Failed to create PRs: {github_result['message']}"
+            jira_message = "No Jira tickets created"
     
         # Post the confirmed email list message
-        post_confirmed_email_list_message(team_name, breakglass_emails, github_result.get("message", ""), jira_result.get("message", ""), slack_client, slack_channel)
+        post_confirmed_email_list_message(team_name, breakglass_emails, pr_message, jira_message, slack_client, slack_channel)
 
     except Exception as e:
         # If an error occurs, send an error message
@@ -148,8 +167,7 @@ def confirm_prod_access(team_name, team_email_lists, slack_client, slack_channel
             text=f":x: An error occurred while processing production access request for team {team_name}: {str(e)}"
         )
         current_app.logger.error(f"Error in confirm_prod_access: {str(e)}")
-
-
+        
 def send_pr_approved_message(pr_number, pr_title, pr_url, approver, slack_client, slack_channel):
     try:
         message = f":white_check_mark: Pull Request #{pr_number} has been approved!\n" \

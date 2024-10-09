@@ -62,9 +62,12 @@ def update_github_and_create_pr(team_name, emails):
             )
 
             # Create a pull request for this email
+            pr_body = f"Automatically generated PR to update BreakGlass email: {email}\n\n"
+            pr_body += "Jira ticket link will be added here."
+
             pr = repo.create_pull(
                 title=f"Update BreakGlass email for {team_name}: {email}",
-                body=f"Automatically generated PR to update BreakGlass email: {email}",
+                body=pr_body,
                 head=branch_name,
                 base="main"
             )
@@ -79,19 +82,33 @@ def update_github_and_create_pr(team_name, emails):
             # Add manager to be the reviewer
             pr.create_review_request(reviewers=[manager_github_username])
 
+
             pr_link = f"<{pr.html_url}|PR-{pr.number}>"
             logger.info(f"Created GitHub PR: {pr.html_url}")
-            prs_created.append(pr_link)
+            prs_created.append({"link": pr_link, "number": pr.number, "email": email})
+
 
         if prs_created:
-            message = f"PRs created: {', '.join(prs_created)}"
-            return {"success": True, "message": message}
+            return {"success": True, "prs": prs_created}
+        else:
+            return {"success": False, "message": "No PRs were created"}
 
     except Exception as e:
         logger.error(f"Failed to create GitHub PR: {str(e)}")
         logger.error(f"Error type: {type(e).__name__}")
         logger.error(f"Error args: {e.args}")
         return {"success": False, "message": str(e)}
+
+
+def update_pr_with_jira_link(repo, pr_number, jira_link):
+    try:
+        pr = repo.get_pull(pr_number)
+        current_body = pr.body
+        updated_body = current_body.replace("Jira ticket link will be added here.", f"Corresponding Jira ticket: {jira_link}")
+        pr.edit(body=updated_body)
+        logger.info(f"Updated PR #{pr_number} with Jira link")
+    except Exception as e:
+        logger.error(f"Failed to update PR #{pr_number} with Jira link: {str(e)}")
 
 def update_content_for_email(content, email):
     try:
