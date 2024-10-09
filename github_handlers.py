@@ -1,6 +1,6 @@
 import os
 from github import Github
-from config import GITHUB_TOKEN, GITHUB_REPO, GITHUB_WEBHOOK_SECRET, MANAGER_GITHUB_USERNAME
+from config import GITHUB_TOKEN, GITHUB_REPO, GITHUB_WEBHOOK_SECRET, get_team_config
 from utils import logger
 from datetime import datetime, timedelta
 import base64
@@ -73,8 +73,11 @@ def update_github_and_create_pr(team_name, emails):
             pr.add_to_labels("breakglass-update")
 
 
+            # Get team-specific configuration
+            team_config = get_team_config(team_name)
+            manager_github_username = team_config.get('manager_github_username') if team_config else None
             # Add manager to be the reviewer
-            pr.create_review_request(reviewers=[MANAGER_GITHUB_USERNAME])
+            pr.create_review_request(reviewers=[manager_github_username])
 
             pr_link = f"<{pr.html_url}|PR-{pr.number}>"
             logger.info(f"Created GitHub PR: {pr.html_url}")

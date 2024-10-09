@@ -1,5 +1,5 @@
 import os
-from config import JIRA_API_TOKEN, JIRA_EMAIL, JIRA_PROJECT_KEY, JIRA_SERVER, MANAGER_EMAIL
+from config import JIRA_API_TOKEN, JIRA_EMAIL, JIRA_PROJECT_KEY, JIRA_SERVER, get_team_config
 from utils import logger
 from jira import JIRA, JIRAError
 
@@ -8,6 +8,10 @@ from jira import JIRA, JIRAError
 def create_jira_tickets(breakglass_emails, team_name):
     jira = JIRA(server=JIRA_SERVER, basic_auth=(JIRA_EMAIL, JIRA_API_TOKEN))
     created_tickets = []
+
+    # Get team-specific configuration
+    team_config = get_team_config(team_name)
+    manager_email = team_config.get('manager_email') if team_config else None
     
     for email in breakglass_emails:
         issue_dict = {
@@ -23,9 +27,9 @@ def create_jira_tickets(breakglass_emails, team_name):
             created_tickets.append(new_issue.key)
             
             try:
-                jira.assign_issue(new_issue, MANAGER_EMAIL)
+                jira.assign_issue(new_issue, manager_email)
             except JIRAError as e:
-                logger.warning(f"Could not assign ticket {new_issue.key} to {MANAGER_EMAIL}: {str(e)}")
+                logger.warning(f"Could not assign ticket {new_issue.key} to {manager_email}: {str(e)}")
         except JIRAError as e:
             logger.error(f"Error creating Jira ticket for {email}: {str(e)}")
     
