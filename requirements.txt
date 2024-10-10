@@ -1,6 +1,8 @@
-flask==3.0.3
-werkzeug==3.0.4
+flask==2.3.3
+werkzeug==2.3.7
 python-dotenv==1.0.1
 slack-sdk==3.33.1
 PyGithub==2.4.0
 jira==3.8.0
+zappa==0.56.1
+aws-wsgi==0.2.7
