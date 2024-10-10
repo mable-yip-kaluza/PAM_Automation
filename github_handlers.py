@@ -1,4 +1,3 @@
-import os
 from github import Github
 from config import GITHUB_TOKEN, GITHUB_REPO, GITHUB_WEBHOOK_SECRET, get_team_config
 from utils import logger
@@ -75,13 +74,15 @@ def update_github_and_create_pr(team_name, emails):
             # Add metadata to the PR
             pr.add_to_labels("firebreak-project")
 
+            # Enable auto merge
+            #pr.enable_automerge("MERGE")
 
             # Get team-specific configuration
             team_config = get_team_config(team_name)
             manager_github_username = team_config.get('manager_github_username') if team_config else None
-            # Add manager to be the reviewer
-            pr.create_review_request(reviewers=[manager_github_username])
-
+            # Add manager to be the reviewer if found in config
+            if manager_github_username:
+                pr.create_review_request(reviewers=[manager_github_username])
 
             pr_link = f"<{pr.html_url}|PR-{pr.number}>"
             logger.info(f"Created GitHub PR: {pr.html_url}")
@@ -127,15 +128,25 @@ def update_content_for_email(content, email):
             email_updated = False
             for entry in write_list:
                 if entry.get('Email') == email:
-                    entry['Expiry'] = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    new_expiry = (datetime.strptime(entry['Expiry'], '%Y-%m-%dT%H:%M:%SZ') + timedelta(days=7))
+                    entry['Expiry'] = new_expiry.strftime('%Y-%m-%dT%H:%M:%SZ')
                     email_updated = True
                     updated = True
                     break
             
             if not email_updated:
+                def next_friday_9am():
+                    today = datetime.utcnow()
+                    days_ahead = 4 - today.weekday()  # Friday is weekday 4
+                    if days_ahead <= 7 or (days_ahead == 0 and today.hour >= 9):  # If it's Friday after 9 AM, go to next Friday
+                        days_ahead += 7
+                    next_friday = today + timedelta(days=days_ahead)
+                    return next_friday.replace(hour=9, minute=0, second=0, microsecond=0)
+    
+                new_expiry = max(next_friday_9am(), datetime.utcnow() + timedelta(days=7))
                 write_list.append({
                     "Email": email,
-                    "Expiry": (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    "Expiry": new_expiry.strftime('%Y-%m-%dT%H:%M:%SZ')
                 })
                 updated = True
             
@@ -173,9 +184,14 @@ def get_emails_from_github(team_name):
                         prod_env_found = True
                         if 'BreakGlass' in aws_account and 'Write' in aws_account['BreakGlass']:
                             for entry in aws_account['BreakGlass']['Write']:
-                                if 'Email' in entry:
-                                    breakglass_emails.append(entry['Email'])
-                                    logger.debug(f"Added email: {entry['Email']}")
+                                if 'Email' in entry and 'Expiry' in entry:
+                                    try:
+                                        expiry_date = datetime.strptime(entry['Expiry'], '%Y-%m-%dT%H:%M:%SZ')
+                                        if expiry_date > datetime.utcnow():
+                                            breakglass_emails.append(entry['Email'])
+                                            logger.debug(f"Added email: {entry['Email']}")
+                                    except ValueError as ve:
+                                        logger.warning(f"Invalid date format for email {entry['Email']}: {ve}")
             if not prod_env_found:
                 raise ValueError("No AWS production environment found")
             

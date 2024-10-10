@@ -34,10 +34,12 @@ def create_jira_tickets(breakglass_emails, team_name, prs):
             logger.info(f"Created Jira ticket: {new_issue.key}")
             created_tickets.append({"key": new_issue.key, "pr_number": pr["number"]})
             
-            try:
-                jira.assign_issue(new_issue, manager_email)
-            except JIRAError as e:
-                logger.warning(f"Could not assign ticket {new_issue.key} to {manager_email}: {str(e)}")
+            if manager_email: 
+                try:
+                    jira.assign_issue(new_issue, manager_email)
+                except JIRAError as e:
+                    logger.warning(f"Could not assign ticket {new_issue.key} to {manager_email}: {str(e)}")
+                    
         except JIRAError as e:
             logger.error(f"Error creating Jira ticket for {email}: {str(e)}")
     
