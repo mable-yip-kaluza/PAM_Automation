@@ -1,4 +1,4 @@
-# Production Access Management (PAM) Slack Bot
+# PAM Slack Bot
 
 This Slack bot automates the process of managing production access for team members. It integrates with GitHub for storing team information and Jira for ticket creation.
 
