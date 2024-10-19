@@ -20,6 +20,12 @@ def create_jira_tickets(breakglass_emails, team_name, prs):
         
         if pr is None:
             logger.warning(f"No PR found for email {email}")
+        # Fetch account IDs for the email and manager
+        requester_account_id = get_account_id(jira, email)
+        manager_account_id = get_account_id(jira, manager_email) if manager_email else None
+
+        if not requester_account_id or not manager_account_id:
+            logger.error(f"Could not find account ID for email: {email} or manager: {manager_email}")
             continue
 
         issue_dict = {
@@ -27,6 +33,14 @@ def create_jira_tickets(breakglass_emails, team_name, prs):
             'summary': f'Grant production access for {email} - {team_name}',
             'description': f'Please grant production access for {email} for the {team_name} team.\n\nCorresponding GitHub PR: {pr["link"]}',
             'issuetype': {'name': 'Task'},
+            # Add required custom fields with correct formats
+            'customfield_17322': {'value': 'Temporary'},  # PAM: Access Need
+            'customfield_15231': {'value': 'Billing'},  # Lead Squad
+            'customfield_17332': {'accountId': requester_account_id},  # PAM: Who is this request for?
+            'customfield_17342': {'accountId': manager_account_id},  # PAM: Who is your SEM?
+            'customfield_17326': {'value': 'Write'},  # PAM: Access Type
+            'customfield_14686': {'value': 'Statements'},  # Assigned Team
+            'customfield_17327': [{'value': 'AWS'}, {'value': 'Direct Kafka'}, {'value': 'Retail-BigQuery'}],  # PAM: Access To (as an array)
         }
         
         try:
@@ -49,3 +63,12 @@ def create_jira_tickets(breakglass_emails, team_name, prs):
         message = "Failed to create any Jira tickets"
         logger.error(message)
         return {"success": False, "message": message}
+    
+def get_account_id(jira, email):
+    try:
+        users = jira.search_users(query=email, maxResults=1)
+        if users:
+            return users[0].accountId
+    except JIRAError as e:
+        logger.error(f"Error searching for user {email}: {str(e)}")
+    return None
